@@ -1,106 +1,337 @@
-import { useState, useMemo } from "react";
-import { CheckCircle2, MessageCircle, RotateCcw } from "lucide-react";
+import { useState, useEffect } from "react";
+import {
+  ArrowLeft,
+  CheckCircle2,
+  MessageCircle,
+  RotateCcw,
+  ShieldCheck,
+  Pencil,
+} from "lucide-react";
 
-const N = 21;
+/* ------------------------------------------------------------------ */
+/* Helpers                                                             */
+/* ------------------------------------------------------------------ */
 
-// Fake but good-looking QR (finder squares + seeded dots) for the prototype
-function QRPlaceholder({ seed = "A-104" }) {
-  const cells = useMemo(() => {
-    let h = 0;
-    for (const ch of seed) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
-    const rand = () => { h = (h * 1664525 + 1013904223) >>> 0; return h / 4294967296; };
-    const finder = (r, c) => {
-      for (const [r0, c0] of [[0, 0], [0, N - 7], [N - 7, 0]]) {
-        const lr = r - r0, lc = c - c0;
-        if (lr >= 0 && lr < 7 && lc >= 0 && lc < 7) {
-          return lr === 0 || lr === 6 || lc === 0 || lc === 6 || (lr >= 2 && lr <= 4 && lc >= 2 && lc <= 4);
-        }
+// Teammate's state may be a plain string OR an object. Handle both.
+const toText = (v, fallback = "Not selected") => {
+  if (!v) return fallback;
+  if (typeof v === "string") return v;
+  return v.name || v.label || v.title || fallback;
+};
+
+const patientText = (p) => {
+  if (!p) return "Not selected";
+  if (typeof p === "string") return p;
+  const name = p.name || p.label || "Patient";
+  return p.age ? `${name}, ${p.age}` : name;
+};
+
+const deptText = (d) => {
+  if (!d) return "Not selected";
+  if (typeof d === "string") return d;
+  return d.short || d.title || d.label || d.name || "Not selected";
+};
+
+const dateText = (d) => {
+  if (!d) return "Not selected";
+  if (typeof d === "string") return d;
+  return d.short || d.label || d.name || "Not selected";
+};
+
+const slotText = (t) => {
+  if (!t) return "Not selected";
+  if (typeof t === "string") return t;
+  const hours = t.sub || (t.start && t.end ? `${t.start} – ${t.end}` : t.start);
+  if (hours && t.label) return `${t.label} (${hours})`;
+  return hours || t.label || "Not selected";
+};
+
+const COLORS = {
+  bg: "#FAF9F6",
+  ink: "#111827",
+  blue: "#0B5ED7",
+  green: "#0F5132",
+  greenSoft: "#E8F3EC",
+  line: "#9CA3AF",
+};
+
+/* ------------------------------------------------------------------ */
+/* Deterministic SVG QR-style placeholder (no library needed)          */
+/* ------------------------------------------------------------------ */
+
+function QrPlaceholder({ size = 176 }) {
+  const N = 21;
+  let seed = 14; // token number -> same pattern every render
+  const rand = () => {
+    seed = (seed * 9301 + 49297) % 233280;
+    return seed / 233280;
+  };
+  const inFinderZone = (r, c) =>
+    (r < 8 && c < 8) || (r < 8 && c >= N - 8) || (r >= N - 8 && c < 8);
+
+  const cells = [];
+  for (let r = 0; r < N; r++) {
+    for (let c = 0; c < N; c++) {
+      if (!inFinderZone(r, c) && rand() > 0.5) {
+        cells.push(<rect key={`${r}-${c}`} x={c} y={r} width="1" height="1" />);
       }
-      return null;
-    };
-    const out = [];
-    for (let r = 0; r < N; r++)
-      for (let c = 0; c < N; c++) {
-        const f = finder(r, c);
-        if (f === true || (f === null && rand() > 0.5)) out.push([r, c]);
-      }
-    return out;
-  }, [seed]);
+    }
+  }
+
+  const Finder = ({ x, y }) => (
+    <g>
+      <rect x={x} y={y} width="7" height="7" fill="#000" />
+      <rect x={x + 1} y={y + 1} width="5" height="5" fill="#fff" />
+      <rect x={x + 2} y={y + 2} width="3" height="3" fill="#000" />
+    </g>
+  );
 
   return (
-    <svg viewBox={`-1 -1 ${N + 2} ${N + 2}`} role="img" aria-label="QR code for OPD token"
-      className="w-28 h-28 shrink-0 border-2 border-[#111827] bg-white" shapeRendering="crispEdges">
+    <svg
+      role="img"
+      aria-label="QR code for your OPD token"
+      width={size}
+      height={size}
+      viewBox={`-1 -1 ${N + 2} ${N + 2}`}
+      shapeRendering="crispEdges"
+      style={{ background: "#fff" }}
+    >
       <rect x="-1" y="-1" width={N + 2} height={N + 2} fill="#fff" />
-      {cells.map(([r, c]) => <rect key={`${r}-${c}`} x={c} y={r} width="1" height="1" fill="#111827" />)}
+      <g fill="#000">{cells}</g>
+      <Finder x={0} y={0} />
+      <Finder x={N - 7} y={0} />
+      <Finder x={0} y={N - 7} />
     </svg>
   );
 }
 
-function Row({ label, value }) {
-  return (
-    <div className="flex justify-between gap-3 py-3 border-b-2 border-gray-200 last:border-b-0">
-      <dt className="text-gray-700">{label}</dt>
-      <dd className="font-bold text-right">{value}</dd>
-    </div>
-  );
-}
+/* ------------------------------------------------------------------ */
+/* Main component                                                      */
+/* ------------------------------------------------------------------ */
 
-export default function StepThreeReview({ patient, department, hospital, date, timeSlot, doctor, onReset }) {
-  const [toast, setToast] = useState(false);
+export default function StepThreeReview({
+  patient,
+  department,
+  hospital,
+  date,
+  timeSlot,
+  doctor,
+  onBack,
+  onReset,
+  isLargeText = false,
+}) {
+  const [confirmed, setConfirmed] = useState(false);
+  const [toast, setToast] = useState("");
 
-  const sendToWhatsApp = () => {
-    setToast(true);
-    setTimeout(() => setToast(false), 3000);
+  const k = isLargeText ? 1.25 : 1;
+  const fs = (px) => ({ fontSize: `${px * k}px`, lineHeight: 1.35 });
+
+  const details = [
+    { label: "Patient", value: patientText(patient) },
+    { label: "Hospital", value: toText(hospital) },
+    { label: "Department", value: deptText(department) },
+    ...(doctor ? [{ label: "Doctor", value: toText(doctor) }] : []),
+    { label: "Date", value: dateText(date) },
+    { label: "Time", value: slotText(timeSlot) },
+    { label: "Consultation fee", value: "₹0 (Free Govt OPD)", strong: true },
+  ];
+
+  useEffect(() => {
+    if (!toast) return;
+    const t = setTimeout(() => setToast(""), 3500);
+    return () => clearTimeout(t);
+  }, [toast]);
+
+  const handleConfirm = () => {
+    setConfirmed(true);
+    window.scrollTo({ top: 0, behavior: "smooth" });
   };
 
-  return (
-    <div className="space-y-4">
-      {/* Big green confirmation box */}
-      <div role="status"
-        className="rounded-2xl border-2 border-[#0F5132] bg-[#0F5132] text-white p-6 flex flex-col items-center text-center gap-2">
-        <CheckCircle2 size={64} aria-hidden="true" />
-        <h1 className="text-3xl font-bold">Booking Confirmed!</h1>
-        <p className="text-lg">Your OPD appointment is booked</p>
-      </div>
+  const handleWhatsApp = () => setToast("Sent to +91 98XXX XXXXX!");
 
-      {/* Digital OPD pass */}
-      <div className="rounded-xl border-2 border-[#111827] bg-white p-4 flex items-center gap-4">
-        <QRPlaceholder />
-        <div className="space-y-1">
-          <p className="inline-block border-2 border-[#111827] px-2 py-1 font-bold text-base">DIGITAL OPD PASS</p>
-          <p className="text-2xl font-bold">TOKEN: #A-104</p>
-          <p className="text-base">Ground Floor, Room 12</p>
+  const focusRing =
+    "focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-offset-2 focus-visible:ring-[#0B5ED7]";
+
+  /* ---------------- AFTER CONFIRMATION: Digital OPD Pass ---------------- */
+  if (confirmed) {
+    return (
+      <div style={{ color: COLORS.ink }}>
+        {/* Calm green header */}
+        <div
+          className="-mx-4 -mt-4 px-5 py-6 flex items-center gap-3"
+          style={{ background: COLORS.green, color: "#FFFFFF" }}
+          role="status"
+          aria-live="polite"
+        >
+          <CheckCircle2 size={40 * k} aria-hidden="true" />
+          <div>
+            <h2 className="font-bold" style={fs(26)}>
+              Appointment Confirmed!
+            </h2>
+            <p style={fs(18)}>Your visit is booked. No payment needed.</p>
+          </div>
+        </div>
+
+        <div className="pt-5 space-y-5">
+          {/* Digital OPD Pass */}
+          <section
+            aria-label="Digital OPD Pass"
+            className="rounded-2xl bg-white overflow-hidden"
+            style={{ border: `3px solid ${COLORS.green}` }}
+          >
+            <div
+              className="px-4 py-3 text-center font-bold"
+              style={{ background: COLORS.greenSoft, color: COLORS.green, ...fs(18) }}
+            >
+              Digital OPD Pass
+            </div>
+
+            <div className="px-4 pt-5 text-center">
+              <p className="font-semibold" style={fs(18)}>
+                Your token number
+              </p>
+              <p
+                className="font-extrabold tracking-wide"
+                style={{ color: COLORS.green, fontSize: `${64 * k}px`, lineHeight: 1.1 }}
+              >
+                #A-14
+              </p>
+            </div>
+
+            <div className="flex justify-center py-4">
+              <div className="p-2 bg-white" style={{ border: `2px solid ${COLORS.ink}` }}>
+                <QrPlaceholder size={176 * (isLargeText ? 1.1 : 1)} />
+              </div>
+            </div>
+
+            <div
+              className="mx-4 mb-4 rounded-xl px-4 py-3 font-bold text-center"
+              style={{ background: COLORS.ink, color: "#FFFFFF", ...fs(20) }}
+            >
+              Show this screen at Counter 4, OPD Block, {toText(hospital, "the hospital")}
+            </div>
+
+            <dl className="px-4 pb-4">
+              {details.map((d) => (
+                <div
+                  key={d.label}
+                  className="py-3"
+                  style={{ borderTop: `1px solid ${COLORS.line}` }}
+                >
+                  <dt className="font-medium" style={{ ...fs(18), color: "#374151" }}>
+                    {d.label}
+                  </dt>
+                  <dd className="font-bold" style={fs(20)}>
+                    {d.value}
+                  </dd>
+                </div>
+              ))}
+            </dl>
+          </section>
+
+          {/* Actions */}
+          <button
+            type="button"
+            onClick={handleWhatsApp}
+            className={`w-full min-h-[56px] rounded-xl font-bold flex items-center justify-center gap-3 px-4 ${focusRing}`}
+            style={{ background: COLORS.blue, color: "#FFFFFF", border: `2px solid ${COLORS.blue}`, ...fs(20) }}
+          >
+            <MessageCircle size={26 * k} aria-hidden="true" />
+            Send Slip to WhatsApp
+          </button>
+
+          <button
+            type="button"
+            onClick={onReset}
+            className={`w-full min-h-[56px] rounded-xl font-bold flex items-center justify-center gap-3 px-4 bg-white ${focusRing}`}
+            style={{ color: COLORS.ink, border: `2px solid ${COLORS.ink}`, ...fs(20) }}
+          >
+            <RotateCcw size={26 * k} aria-hidden="true" />
+            Book Another Appointment
+          </button>
+        </div>
+
+        {/* Toast */}
+        <div aria-live="polite" role="status">
+          {toast && (
+            <div
+              className="fixed left-1/2 -translate-x-1/2 bottom-6 z-50 w-[calc(100%-2rem)] max-w-[398px] rounded-xl px-4 py-4 font-bold text-center shadow-xl"
+              style={{ background: COLORS.ink, color: "#FFFFFF", ...fs(18) }}
+            >
+              {toast}
+            </div>
+          )}
         </div>
       </div>
+    );
+  }
 
-      {/* Details */}
-      <section className="rounded-xl border-2 border-[#111827] bg-white p-4">
-        <h2 className="text-2xl font-bold mb-1">Patient</h2>
+  /* ---------------- BEFORE CONFIRMATION: Review ---------------- */
+  return (
+    <div className="space-y-5" style={{ color: COLORS.ink }}>
+      <h2 className="font-bold" style={fs(26)}>
+        Check Your Appointment Details
+      </h2>
+
+      <section
+        aria-label="Appointment summary"
+        className="rounded-2xl bg-white px-4"
+        style={{ border: `2px solid ${COLORS.ink}` }}
+      >
         <dl>
-          <Row label="Name" value={`${patient?.name}, ${patient?.age}`} />
-          <Row label="Department" value={department?.short} />
-          <Row label="Doctor" value={doctor?.name} />
-          <Row label="Date" value={`${date?.short} (${timeSlot?.start})`} />
-          <Row label="Hospital" value={hospital?.name} />
-          <Row label="Fee" value="₹0 (Free Govt OPD)" />
+          {details.map((d, i) => (
+            <div
+              key={d.label}
+              className="py-3"
+              style={i === 0 ? undefined : { borderTop: `1px solid ${COLORS.line}` }}
+            >
+              <dt className="font-medium" style={{ ...fs(18), color: "#374151" }}>
+                {d.label}
+              </dt>
+              <dd
+                className="font-bold"
+                style={{ ...fs(20), color: d.strong ? COLORS.green : COLORS.ink }}
+              >
+                {d.value}
+              </dd>
+            </div>
+          ))}
         </dl>
       </section>
 
-      <button type="button" onClick={sendToWhatsApp}
-        className="w-full min-h-[56px] rounded-xl border-2 border-[#0F5132] bg-white text-[#0F5132] font-bold text-lg flex items-center justify-center gap-2 focus:outline-none focus-visible:ring-4 focus-visible:ring-[#0B5ED7]">
-        <MessageCircle size={24} aria-hidden="true" /> Send Pass to WhatsApp
+      {/* Reassurance */}
+      <div
+        className="rounded-xl px-4 py-3 flex items-start gap-3"
+        style={{ background: COLORS.greenSoft, border: `2px solid ${COLORS.green}`, color: COLORS.green }}
+      >
+        <ShieldCheck size={28 * k} className="shrink-0 mt-0.5" aria-hidden="true" />
+        <p className="font-semibold" style={fs(18)}>
+          No CAPTCHA required. You can cancel or reschedule anytime.
+        </p>
+      </div>
+
+      {/* Primary action */}
+      <button
+        type="button"
+        onClick={handleConfirm}
+        className={`w-full min-h-[60px] rounded-xl font-bold flex items-center justify-center gap-3 px-4 ${focusRing}`}
+        style={{ background: COLORS.green, color: "#FFFFFF", border: `2px solid ${COLORS.green}`, ...fs(22) }}
+      >
+        <CheckCircle2 size={28 * k} aria-hidden="true" />
+        Confirm OPD Appointment
       </button>
 
-      <button type="button" onClick={onReset}
-        className="w-full min-h-[56px] rounded-xl border-2 border-[#111827] bg-white font-bold text-lg flex items-center justify-center gap-2 focus:outline-none focus-visible:ring-4 focus-visible:ring-[#0B5ED7]">
-        <RotateCcw size={24} aria-hidden="true" /> Book Another Appointment
+      {/* Secondary action */}
+      {onBack && (
+      <button
+        type="button"
+        onClick={onBack}
+        className={`w-full min-h-[56px] rounded-xl font-bold flex items-center justify-center gap-3 px-4 bg-white ${focusRing}`}
+        style={{ color: COLORS.blue, border: `2px solid ${COLORS.blue}`, ...fs(20) }}
+      >
+        <Pencil size={24 * k} aria-hidden="true" />
+        Change Details
       </button>
-
-      {toast && (
-        <div role="status"
-          className="fixed bottom-6 left-1/2 -translate-x-1/2 z-40 rounded-xl bg-[#111827] text-white font-bold px-5 py-4 shadow-xl">
-          Sent to +91 98XXX XXXXX!
-        </div>
       )}
     </div>
   );
