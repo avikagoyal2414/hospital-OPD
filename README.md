@@ -1,3 +1,11 @@
+## Live demo
+https://hospital-opd-six.vercel.app
+
+Best viewed on a phone in Chrome.
+
+
+
+
 # React + Vite
 
 This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
